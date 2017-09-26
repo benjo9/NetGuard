@@ -16,7 +16,7 @@ package eu.faircode.netguard;
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 import android.content.Intent;
@@ -29,7 +29,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.support.v4.app.NavUtils;
-import android.support.v4.view.MenuItemCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.SearchView;
 import android.support.v7.widget.SwitchCompat;
@@ -93,7 +92,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
 
         // Action bar
         View actionView = getLayoutInflater().inflate(R.layout.actionlog, null, false);
-        SwitchCompat swEnabled = (SwitchCompat) actionView.findViewById(R.id.swEnabled);
+        SwitchCompat swEnabled = actionView.findViewById(R.id.swEnabled);
 
         getSupportActionBar().setDisplayShowCustomEnabled(true);
         getSupportActionBar().setCustomView(actionView);
@@ -108,7 +107,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
         boolean log = prefs.getBoolean("log", false);
 
         // Show disabled message
-        TextView tvDisabled = (TextView) findViewById(R.id.tvDisabled);
+        TextView tvDisabled = findViewById(R.id.tvDisabled);
         tvDisabled.setVisibility(log ? View.GONE : View.VISIBLE);
 
         // Set enabled switch
@@ -122,7 +121,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
         // Listen for preference changes
         prefs.registerOnSharedPreferenceChangeListener(this);
 
-        lvLog = (ListView) findViewById(R.id.lvLog);
+        lvLog = findViewById(R.id.lvLog);
 
         boolean udp = prefs.getBoolean("proto_udp", true);
         boolean tcp = prefs.getBoolean("proto_tcp", true);
@@ -194,18 +193,18 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                 popup.getMenu().findItem(R.id.menu_protocol).setTitle(Util.getProtocolName(protocol, version, false));
 
                 // Whois
-                final Intent lookupIP = new Intent(Intent.ACTION_VIEW, Uri.parse("http://www.tcpiputils.com/whois-lookup/" + ip));
+                final Intent lookupIP = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.tcpiputils.com/whois-lookup/" + ip));
                 if (pm.resolveActivity(lookupIP, 0) == null)
                     popup.getMenu().removeItem(R.id.menu_whois);
                 else
                     popup.getMenu().findItem(R.id.menu_whois).setTitle(getString(R.string.title_log_whois, ip));
 
                 // Lookup port
-                final Intent lookupPort = new Intent(Intent.ACTION_VIEW, Uri.parse("http://www.speedguide.net/port.php?port=" + port));
+                final Intent lookupPort = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.speedguide.net/port.php?port=" + port));
                 if (port <= 0 || pm.resolveActivity(lookupPort, 0) == null)
                     popup.getMenu().removeItem(R.id.menu_port);
                 else
-                    popup.getMenu().findItem(R.id.menu_port).setTitle(getString(R.string.title_log_port, dport));
+                    popup.getMenu().findItem(R.id.menu_port).setTitle(getString(R.string.title_log_port, port));
 
                 if (!prefs.getBoolean("filter", false)) {
                     popup.getMenu().removeItem(R.id.menu_allow);
@@ -247,7 +246,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                             case R.id.menu_allow:
                                 if (IAB.isPurchased(ActivityPro.SKU_FILTER, ActivityLog.this)) {
                                     DatabaseHelper.getInstance(ActivityLog.this).updateAccess(packet, dname, 0);
-                                    SinkholeService.reload("allow host", ActivityLog.this);
+                                    ServiceSinkhole.reload("allow host", ActivityLog.this, false);
                                     Intent main = new Intent(ActivityLog.this, ActivityMain.class);
                                     main.putExtra(ActivityMain.EXTRA_SEARCH, Integer.toString(uid));
                                     startActivity(main);
@@ -258,7 +257,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                             case R.id.menu_block:
                                 if (IAB.isPurchased(ActivityPro.SKU_FILTER, ActivityLog.this)) {
                                     DatabaseHelper.getInstance(ActivityLog.this).updateAccess(packet, dname, 1);
-                                    SinkholeService.reload("block host", ActivityLog.this);
+                                    ServiceSinkhole.reload("block host", ActivityLog.this, false);
                                     Intent main = new Intent(ActivityLog.this, ActivityMain.class);
                                     main.putExtra(ActivityMain.EXTRA_SEARCH, Integer.toString(uid));
                                     startActivity(main);
@@ -299,6 +298,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
     @Override
     protected void onDestroy() {
         running = false;
+        adapter = null;
         PreferenceManager.getDefaultSharedPreferences(this).unregisterOnSharedPreferenceChangeListener(this);
         super.onDestroy();
     }
@@ -311,15 +311,15 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
             boolean log = prefs.getBoolean(name, false);
 
             // Display disabled warning
-            TextView tvDisabled = (TextView) findViewById(R.id.tvDisabled);
+            TextView tvDisabled = findViewById(R.id.tvDisabled);
             tvDisabled.setVisibility(log ? View.GONE : View.VISIBLE);
 
             // Check switch state
-            SwitchCompat swEnabled = (SwitchCompat) getSupportActionBar().getCustomView().findViewById(R.id.swEnabled);
+            SwitchCompat swEnabled = getSupportActionBar().getCustomView().findViewById(R.id.swEnabled);
             if (swEnabled.isChecked() != log)
                 swEnabled.setChecked(log);
 
-            SinkholeService.reload("changed " + name, ActivityLog.this);
+            ServiceSinkhole.reload("changed " + name, ActivityLog.this, false);
         }
     }
 
@@ -329,19 +329,32 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
         inflater.inflate(R.menu.logging, menu);
 
         menuSearch = menu.findItem(R.id.menu_search);
-        SearchView searchView = (SearchView) MenuItemCompat.getActionView(menuSearch);
+        SearchView searchView = (SearchView) menuSearch.getActionView();
         searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+            private String getUidForName(String query) {
+                if (query != null && query.length() > 0) {
+                    for (Rule rule : Rule.getRules(true, ActivityLog.this))
+                        if (rule.name != null && rule.name.toLowerCase().contains(query.toLowerCase())) {
+                            String newQuery = Integer.toString(rule.info.applicationInfo.uid);
+                            Log.i(TAG, "Search " + query + " found " + rule.name + " new " + newQuery);
+                            return newQuery;
+                        }
+                    Log.i(TAG, "Search " + query + " not found");
+                }
+                return query;
+            }
+
             @Override
             public boolean onQueryTextSubmit(String query) {
                 if (adapter != null)
-                    adapter.getFilter().filter(query);
+                    adapter.getFilter().filter(getUidForName(query));
                 return true;
             }
 
             @Override
             public boolean onQueryTextChange(String newText) {
                 if (adapter != null)
-                    adapter.getFilter().filter(newText);
+                    adapter.getFilter().filter(getUidForName(newText));
                 return true;
             }
         });
@@ -362,7 +375,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         // https://gist.github.com/granoeste/5574148
-        File pcap_file = new File(getCacheDir(), "netguard.pcap");
+        File pcap_file = new File(getDir("data", MODE_PRIVATE), "netguard.pcap");
 
         boolean export = (getPackageManager().resolveActivity(getIntentPCAPDocument(), 0) != null);
 
@@ -376,7 +389,6 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
         menu.findItem(R.id.menu_refresh).setEnabled(!menu.findItem(R.id.menu_log_live).isChecked());
         menu.findItem(R.id.menu_log_resolve).setChecked(prefs.getBoolean("resolve", false));
         menu.findItem(R.id.menu_log_organization).setChecked(prefs.getBoolean("organization", false));
-        menu.findItem(R.id.menu_pcap_enabled).setEnabled(prefs.getBoolean("filter", false));
         menu.findItem(R.id.menu_pcap_enabled).setChecked(prefs.getBoolean("pcap", false));
         menu.findItem(R.id.menu_pcap_export).setEnabled(pcap_file.exists() && export);
 
@@ -386,7 +398,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        final File pcap_file = new File(getCacheDir(), "netguard.pcap");
+        final File pcap_file = new File(getDir("data", MODE_PRIVATE), "netguard.pcap");
 
         switch (item.getItemId()) {
             case android.R.id.home:
@@ -455,7 +467,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
             case R.id.menu_pcap_enabled:
                 item.setChecked(!item.isChecked());
                 prefs.edit().putBoolean("pcap", item.isChecked()).apply();
-                SinkholeService.setPcap(item.isChecked(), ActivityLog.this);
+                ServiceSinkhole.setPcap(item.isChecked(), ActivityLog.this);
                 return true;
 
             case R.id.menu_pcap_export:
@@ -466,12 +478,12 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                 new AsyncTask<Object, Object, Object>() {
                     @Override
                     protected Object doInBackground(Object... objects) {
-                        DatabaseHelper.getInstance(ActivityLog.this).clearLog();
+                        DatabaseHelper.getInstance(ActivityLog.this).clearLog(-1);
                         if (prefs.getBoolean("pcap", false)) {
-                            SinkholeService.setPcap(false, ActivityLog.this);
+                            ServiceSinkhole.setPcap(false, ActivityLog.this);
                             if (pcap_file.exists() && !pcap_file.delete())
                                 Log.w(TAG, "Delete PCAP failed");
-                            SinkholeService.setPcap(true, ActivityLog.this);
+                            ServiceSinkhole.setPcap(true, ActivityLog.this);
                         } else {
                             if (pcap_file.exists() && !pcap_file.delete())
                                 Log.w(TAG, "Delete PCAP failed");
@@ -484,7 +496,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                         if (running)
                             updateAdapter();
                     }
-                }.execute();
+                }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
                 return true;
 
             case R.id.menu_log_support:
@@ -509,7 +521,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
             boolean blocked = prefs.getBoolean("traffic_blocked", true);
             adapter.changeCursor(DatabaseHelper.getInstance(this).getLog(udp, tcp, other, allowed, blocked));
             if (menuSearch != null && menuSearch.isActionViewExpanded()) {
-                SearchView searchView = (SearchView) MenuItemCompat.getActionView(menuSearch);
+                SearchView searchView = (SearchView) menuSearch.getActionView();
                 adapter.getFilter().filter(searchView.getQuery().toString());
             }
         }
@@ -517,7 +529,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
 
     private Intent getIntentPCAPDocument() {
         Intent intent;
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
             if (Util.isPackageInstalled("org.openintents.filemanager", this)) {
                 intent = new Intent("org.openintents.action.PICK_DIRECTORY");
             } else {
@@ -555,7 +567,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                 FileInputStream in = null;
                 try {
                     // Stop capture
-                    SinkholeService.setPcap(false, ActivityLog.this);
+                    ServiceSinkhole.setPcap(false, ActivityLog.this);
 
                     Uri target = data.getData();
                     if (data.hasExtra("org.openintents.extra.DIR_PATH"))
@@ -563,7 +575,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                     Log.i(TAG, "Export PCAP URI=" + target);
                     out = getContentResolver().openOutputStream(target);
 
-                    File pcap = new File(getCacheDir(), "netguard.pcap");
+                    File pcap = new File(getDir("data", MODE_PRIVATE), "netguard.pcap");
                     in = new FileInputStream(pcap);
 
                     int len;
@@ -578,7 +590,6 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                     return null;
                 } catch (Throwable ex) {
                     Log.e(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
-                    Util.sendCrashReport(ex, ActivityLog.this);
                     return ex;
                 } finally {
                     if (out != null)
@@ -597,7 +608,7 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                     // Resume capture
                     SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ActivityLog.this);
                     if (prefs.getBoolean("pcap", false))
-                        SinkholeService.setPcap(true, ActivityLog.this);
+                        ServiceSinkhole.setPcap(true, ActivityLog.this);
                 }
             }
 
@@ -608,6 +619,6 @@ public class ActivityLog extends AppCompatActivity implements SharedPreferences.
                 else
                     Toast.makeText(ActivityLog.this, ex.toString(), Toast.LENGTH_LONG).show();
             }
-        }.execute();
+        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 }

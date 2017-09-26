@@ -30,7 +30,7 @@ Features:
 &bull; 100% open source
 &bull; No calling home
 &bull; No tracking or analytics
-&bull; No advertisements
+&bull; Actively developed and supported
 &bull; Android 4.0 and later supported
 &bull; IPv4/IPv6 TCP/UDP supported
 &bull; Tethering supported
@@ -38,7 +38,6 @@ Features:
 &bull; Optionally allow when screen on
 &bull; Optionally block when roaming
 &bull; Optionally block system applications
-&bull; Optionally forward ports, also to external addresses
 &bull; Optionally notify when an application accesses the internet
 &bull; Optionally record network usage per application per address
 &bull; Material design theme with light and dark theme
@@ -53,10 +52,12 @@ PRO features:
 
 There is no other no-root firewall offering all these features.
 
-For questions and answers please read more here: http://forum.xda-developers.com/showthread.php?t=3233012
+If you have a question or problem, you can send an e-mail to marcel+netguard@faircode.eu
 
 If you like to help people less fluent in English, you can help translate NetGuard in your language: https://crowdin.com/project/netguard/
 
 If you like to test new features, you can participate in the test program: https://play.google.com/apps/testing/eu.faircode.netguard
+
+All required permissions are described here: https://github.com/M66B/NetGuard/blob/master/FAQ.md#FAQ42
 
 The source code is available here: https://github.com/M66B/NetGuard

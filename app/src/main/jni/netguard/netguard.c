@@ -14,7 +14,7 @@
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 #include "netguard.h"
@@ -25,15 +25,19 @@
 // Global variables
 
 JavaVM *jvm = NULL;
+int pipefds[2];
 pthread_t thread_id = 0;
 pthread_mutex_t lock;
-jboolean stopping = 0;
-jboolean signaled = 0;
+char socks5_addr[INET6_ADDRSTRLEN + 1];
+int socks5_port = 0;
+char socks5_username[127 + 1];
+char socks5_password[127 + 1];
 int loglevel = ANDROID_LOG_WARN;
 
 extern int max_tun_msg;
+extern struct ng_session *ng_session;
 extern FILE *pcap_file;
-extern int pcap_record_size;
+extern size_t pcap_record_size;
 extern long pcap_file_size;
 
 // JNI
@@ -83,6 +87,8 @@ jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 void JNI_OnUnload(JavaVM *vm, void *reserved) {
     log_android(ANDROID_LOG_INFO, "JNI unload");
 
+    clear();
+
     JNIEnv *env;
     if ((*vm)->GetEnv(vm, (void **) &env, JNI_VERSION_1_6) != JNI_OK)
         log_android(ANDROID_LOG_INFO, "JNI load GetEnv failed");
@@ -92,28 +98,41 @@ void JNI_OnUnload(JavaVM *vm, void *reserved) {
     }
 }
 
-// JNI SinkholeService
+// JNI ServiceSinkhole
 
 JNIEXPORT void JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1init(JNIEnv *env, jobject instance) {
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1init(JNIEnv *env, jobject instance) {
     loglevel = ANDROID_LOG_WARN;
 
     struct arguments args;
     args.env = env;
     args.instance = instance;
-    init_icmp(&args);
-    init_udp(&args);
-    init_tcp(&args);
+    init(&args);
 
+    *socks5_addr = 0;
+    socks5_port = 0;
+    *socks5_username = 0;
+    *socks5_password = 0;
     pcap_file = NULL;
 
     if (pthread_mutex_init(&lock, NULL))
         log_android(ANDROID_LOG_ERROR, "pthread_mutex_init failed");
+
+    // Create signal pipe
+    if (pipe(pipefds))
+        log_android(ANDROID_LOG_ERROR, "Create pipe error %d: %s", errno, strerror(errno));
+    else
+        for (int i = 0; i < 2; i++) {
+            int flags = fcntl(pipefds[i], F_GETFL, 0);
+            if (flags < 0 || fcntl(pipefds[i], F_SETFL, flags | O_NONBLOCK) < 0)
+                log_android(ANDROID_LOG_ERROR, "fcntl pipefds[%d] O_NONBLOCK error %d: %s",
+                            i, errno, strerror(errno));
+        }
 }
 
 JNIEXPORT void JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1start(
-        JNIEnv *env, jobject instance, jint tun, jboolean fwd53, jint loglevel_) {
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1start(
+        JNIEnv *env, jobject instance, jint tun, jboolean fwd53, jint rcode, jint loglevel_) {
 
     loglevel = loglevel_;
     max_tun_msg = 0;
@@ -140,6 +159,7 @@ Java_eu_faircode_netguard_SinkholeService_jni_1start(
         args->instance = (*env)->NewGlobalRef(env, instance);
         args->tun = tun;
         args->fwd53 = fwd53;
+        args->rcode = rcode;
 
         // Start native thread
         int err = pthread_create(&thread_id, NULL, handle_events, (void *) args);
@@ -151,46 +171,57 @@ Java_eu_faircode_netguard_SinkholeService_jni_1start(
 }
 
 JNIEXPORT void JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1stop(
-        JNIEnv *env, jobject instance, jint tun, jboolean clear) {
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1stop(
+        JNIEnv *env, jobject instance, jint tun, jboolean clr) {
     pthread_t t = thread_id;
-    log_android(ANDROID_LOG_WARN, "Stop tun %d clear %d thread %x", tun, (int) clear, t);
+    log_android(ANDROID_LOG_WARN, "Stop tun %d  thread %x", tun, t);
     if (t && pthread_kill(t, 0) == 0) {
-        stopping = 1;
-        log_android(ANDROID_LOG_WARN, "Kill thread %x", t);
-        int err = pthread_kill(t, SIGUSR1);
-        if (err != 0)
-            log_android(ANDROID_LOG_WARN, "pthread_kill error %d: %s", err, strerror(err));
+        log_android(ANDROID_LOG_WARN, "Write pipe thread %x", t);
+        if (write(pipefds[1], "x", 1) < 0)
+            log_android(ANDROID_LOG_WARN, "Write pipe error %d: %s", errno, strerror(errno));
         else {
             log_android(ANDROID_LOG_WARN, "Join thread %x", t);
-            err = pthread_join(t, NULL);
+            int err = pthread_join(t, NULL);
             if (err != 0)
                 log_android(ANDROID_LOG_WARN, "pthread_join error %d: %s", err, strerror(err));
         }
 
-        if (clear) {
-            clear_icmp();
-            clear_udp();
-            clear_tcp();
-        }
+        if (clr)
+            clear();
 
         log_android(ANDROID_LOG_WARN, "Stopped thread %x", t);
     } else
         log_android(ANDROID_LOG_WARN, "Not running thread %x", t);
 }
 
-#include <dirent.h>
+JNIEXPORT jint JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1get_1mtu(JNIEnv *env, jobject instance) {
+    return get_mtu();
+}
 
 JNIEXPORT jintArray JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1get_1stats(JNIEnv *env, jobject instance) {
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1get_1stats(JNIEnv *env, jobject instance) {
     if (pthread_mutex_lock(&lock))
         log_android(ANDROID_LOG_ERROR, "pthread_mutex_lock failed");
 
     jintArray jarray = (*env)->NewIntArray(env, 5);
     jint *jcount = (*env)->GetIntArrayElements(env, jarray, NULL);
-    jcount[0] = get_icmp_sessions();
-    jcount[1] = get_udp_sessions();
-    jcount[2] = get_tcp_sessions();
+
+
+    struct ng_session *s = ng_session;
+    while (s != NULL) {
+        if (s->protocol == IPPROTO_ICMP || s->protocol == IPPROTO_ICMPV6) {
+            if (!s->icmp.stop)
+                jcount[0]++;
+        } else if (s->protocol == IPPROTO_UDP) {
+            if (s->udp.state == UDP_ACTIVE)
+                jcount[1]++;
+        } else if (s->protocol == IPPROTO_TCP) {
+            if (s->tcp.state != TCP_CLOSING && s->tcp.state != TCP_CLOSE)
+                jcount[2]++;
+        }
+        s = s->next;
+    }
 
     if (pthread_mutex_unlock(&lock))
         log_android(ANDROID_LOG_ERROR, "pthread_mutex_unlock failed");
@@ -208,18 +239,18 @@ Java_eu_faircode_netguard_SinkholeService_jni_1get_1stats(JNIEnv *env, jobject i
     struct rlimit rlim;
     memset(&rlim, 0, sizeof(struct rlimit));
     getrlimit(RLIMIT_NOFILE, &rlim);
-    jcount[4] = rlim.rlim_cur;
+    jcount[4] = (jint) rlim.rlim_cur;
 
     (*env)->ReleaseIntArrayElements(env, jarray, jcount, NULL);
     return jarray;
 }
 
 JNIEXPORT void JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1pcap(
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1pcap(
         JNIEnv *env, jclass type,
         jstring name_, jint record_size, jint file_size) {
 
-    pcap_record_size = record_size;
+    pcap_record_size = (size_t) record_size;
     pcap_file_size = file_size;
 
     if (pthread_mutex_lock(&lock))
@@ -241,8 +272,7 @@ Java_eu_faircode_netguard_SinkholeService_jni_1pcap(
             pcap_file = NULL;
         }
         log_android(ANDROID_LOG_WARN, "PCAP disabled");
-    }
-    else {
+    } else {
         const char *name = (*env)->GetStringUTFChars(env, name_, 0);
         log_android(ANDROID_LOG_WARN, "PCAP file %s record size %d truncate @%ld",
                     name, pcap_record_size, pcap_file_size);
@@ -260,8 +290,7 @@ Java_eu_faircode_netguard_SinkholeService_jni_1pcap(
             if (size == 0) {
                 log_android(ANDROID_LOG_WARN, "PCAP initialize");
                 write_pcap_hdr();
-            }
-            else
+            } else
                 log_android(ANDROID_LOG_WARN, "PCAP current size %ld", size);
         }
 
@@ -272,17 +301,39 @@ Java_eu_faircode_netguard_SinkholeService_jni_1pcap(
         log_android(ANDROID_LOG_ERROR, "pthread_mutex_unlock failed");
 }
 
+JNIEXPORT void JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1socks5(JNIEnv *env, jobject instance, jstring addr_,
+                                                      jint port, jstring username_,
+                                                      jstring password_) {
+    const char *addr = (*env)->GetStringUTFChars(env, addr_, 0);
+    const char *username = (*env)->GetStringUTFChars(env, username_, 0);
+    const char *password = (*env)->GetStringUTFChars(env, password_, 0);
+
+    strcpy(socks5_addr, addr);
+    socks5_port = port;
+    strcpy(socks5_username, username);
+    strcpy(socks5_password, password);
+
+    log_android(ANDROID_LOG_WARN, "SOCKS5 %s:%d user=%s",
+                socks5_addr, socks5_port, socks5_username);
+
+    (*env)->ReleaseStringUTFChars(env, addr_, addr);
+    (*env)->ReleaseStringUTFChars(env, username_, username);
+    (*env)->ReleaseStringUTFChars(env, password_, password);
+}
 
 JNIEXPORT void JNICALL
-Java_eu_faircode_netguard_SinkholeService_jni_1done(JNIEnv *env, jobject instance) {
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1done(JNIEnv *env, jobject instance) {
     log_android(ANDROID_LOG_INFO, "Done");
 
-    clear_icmp();
-    clear_udp();
-    clear_tcp();
+    clear();
 
     if (pthread_mutex_destroy(&lock))
         log_android(ANDROID_LOG_ERROR, "pthread_mutex_destroy failed");
+
+    for (int i = 0; i < 2; i++)
+        if (close(pipefds[i]))
+            log_android(ANDROID_LOG_ERROR, "Close pipe error %d: %s", errno, strerror(errno));
 }
 
 // JNI Util
@@ -291,8 +342,8 @@ JNIEXPORT jstring JNICALL
 Java_eu_faircode_netguard_Util_jni_1getprop(JNIEnv *env, jclass type, jstring name_) {
     const char *name = (*env)->GetStringUTFChars(env, name_, 0);
 
-    char value[250] = "";
-    __system_property_get(env, name, value);
+    char value[PROP_VALUE_MAX + 1] = "";
+    __system_property_get(name, value);
 
     (*env)->ReleaseStringUTFChars(env, name_, name);
 
@@ -313,7 +364,7 @@ Java_eu_faircode_netguard_Util_is_1numeric_1address(JNIEnv *env, jclass type, js
     if (err)
         log_android(ANDROID_LOG_DEBUG, "getaddrinfo(%s) error %d: %s", ip, err, gai_strerror(err));
     else
-        numeric = (result != NULL);
+        numeric = (jboolean) (result != NULL);
 
     (*env)->ReleaseStringUTFChars(env, ip_, ip);
     return numeric;

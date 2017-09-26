@@ -16,7 +16,7 @@ package eu.faircode.netguard;
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 import android.content.Context;
@@ -24,12 +24,17 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
+import android.os.Handler;
 import android.preference.PreferenceManager;
 import android.support.v4.graphics.drawable.DrawableCompat;
+import android.support.v4.view.ViewCompat;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.TypedValue;
@@ -46,13 +51,13 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.List;
+import java.util.concurrent.RejectedExecutionException;
 
 public class AdapterLog extends CursorAdapter {
     private static String TAG = "NetGuard.Log";
 
     private boolean resolve;
     private boolean organization;
-    private int colID;
     private int colTime;
     private int colVersion;
     private int colProtocol;
@@ -70,7 +75,8 @@ public class AdapterLog extends CursorAdapter {
     private int colorOn;
     private int colorOff;
     private int iconSize;
-    private InetAddress dns = null;
+    private InetAddress dns1 = null;
+    private InetAddress dns2 = null;
     private InetAddress vpn4 = null;
     private InetAddress vpn6 = null;
 
@@ -78,7 +84,6 @@ public class AdapterLog extends CursorAdapter {
         super(context, cursor, 0);
         this.resolve = resolve;
         this.organization = organization;
-        colID = cursor.getColumnIndex("ID");
         colTime = cursor.getColumnIndex("time");
         colVersion = cursor.getColumnIndex("version");
         colProtocol = cursor.getColumnIndex("protocol");
@@ -103,8 +108,10 @@ public class AdapterLog extends CursorAdapter {
         iconSize = Util.dips2pixels(24, context);
 
         try {
+            List<InetAddress> lstDns = ServiceSinkhole.getDns(context);
+            dns1 = (lstDns.size() > 0 ? lstDns.get(0) : null);
+            dns2 = (lstDns.size() > 1 ? lstDns.get(1) : null);
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-            dns = SinkholeService.getDns(context).get(0);
             vpn4 = InetAddress.getByName(prefs.getString("vpn4", "10.1.10.1"));
             vpn6 = InetAddress.getByName(prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1"));
         } catch (UnknownHostException ex) {
@@ -128,7 +135,6 @@ public class AdapterLog extends CursorAdapter {
     @Override
     public void bindView(final View view, final Context context, final Cursor cursor) {
         // Get values
-        final long id = cursor.getLong(colID);
         long time = cursor.getLong(colTime);
         int version = (cursor.isNull(colVersion) ? -1 : cursor.getInt(colVersion));
         int protocol = (cursor.isNull(colProtocol) ? -1 : cursor.getInt(colProtocol));
@@ -145,19 +151,19 @@ public class AdapterLog extends CursorAdapter {
         int interactive = (cursor.isNull(colInteractive) ? -1 : cursor.getInt(colInteractive));
 
         // Get views
-        TextView tvTime = (TextView) view.findViewById(R.id.tvTime);
-        TextView tvProtocol = (TextView) view.findViewById(R.id.tvProtocol);
-        TextView tvFlags = (TextView) view.findViewById(R.id.tvFlags);
-        TextView tvSAddr = (TextView) view.findViewById(R.id.tvSAddr);
-        TextView tvSPort = (TextView) view.findViewById(R.id.tvSPort);
-        final TextView tvDaddr = (TextView) view.findViewById(R.id.tvDAddr);
-        TextView tvDPort = (TextView) view.findViewById(R.id.tvDPort);
-        final TextView tvOrganization = (TextView) view.findViewById(R.id.tvOrganization);
-        ImageView ivIcon = (ImageView) view.findViewById(R.id.ivIcon);
-        TextView tvUid = (TextView) view.findViewById(R.id.tvUid);
-        TextView tvData = (TextView) view.findViewById(R.id.tvData);
-        ImageView ivConnection = (ImageView) view.findViewById(R.id.ivConnection);
-        ImageView ivInteractive = (ImageView) view.findViewById(R.id.ivInteractive);
+        TextView tvTime = view.findViewById(R.id.tvTime);
+        TextView tvProtocol = view.findViewById(R.id.tvProtocol);
+        TextView tvFlags = view.findViewById(R.id.tvFlags);
+        TextView tvSAddr = view.findViewById(R.id.tvSAddr);
+        TextView tvSPort = view.findViewById(R.id.tvSPort);
+        final TextView tvDaddr = view.findViewById(R.id.tvDAddr);
+        TextView tvDPort = view.findViewById(R.id.tvDPort);
+        final TextView tvOrganization = view.findViewById(R.id.tvOrganization);
+        final ImageView ivIcon = view.findViewById(R.id.ivIcon);
+        TextView tvUid = view.findViewById(R.id.tvUid);
+        TextView tvData = view.findViewById(R.id.tvData);
+        ImageView ivConnection = view.findViewById(R.id.ivConnection);
+        ImageView ivInteractive = view.findViewById(R.id.ivInteractive);
 
         // Show time
         tvTime.setText(new SimpleDateFormat("HH:mm:ss").format(time));
@@ -212,12 +218,42 @@ public class AdapterLog extends CursorAdapter {
                 info = pm.getApplicationInfo(pkg[0], 0);
             } catch (PackageManager.NameNotFoundException ignored) {
             }
-        if (info == null || info.icon == 0)
-            Picasso.with(context).load(android.R.drawable.sym_def_app_icon).into(ivIcon);
+
+        if (info == null)
+            ivIcon.setImageDrawable(null);
         else {
-            Uri uri = Uri.parse("android.resource://" + info.packageName + "/" + info.icon);
-            Picasso.with(context).load(uri).resize(iconSize, iconSize).into(ivIcon);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                Icon icon;
+                if (info.icon == 0)
+                    icon = Icon.createWithResource(context, android.R.drawable.sym_def_app_icon);
+                else
+                    icon = Icon.createWithResource(info.packageName, info.icon);
+                try {
+                    icon.loadDrawableAsync(context, new Icon.OnDrawableLoadedListener() {
+                        @Override
+                        public void onDrawableLoaded(Drawable drawable) {
+                            if (drawable instanceof BitmapDrawable) {
+                                Bitmap original = ((BitmapDrawable) drawable).getBitmap();
+                                Bitmap scaled = Bitmap.createScaledBitmap(original, iconSize, iconSize, false);
+                                ivIcon.setImageDrawable(new BitmapDrawable(context.getResources(), scaled));
+                            } else
+                                ivIcon.setImageDrawable(drawable);
+                        }
+                    }, new Handler(context.getMainLooper()));
+                } catch (RejectedExecutionException ex) {
+                    Log.w(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
+                }
+            } else {
+                if (info.icon == 0)
+                    Picasso.with(context).load(android.R.drawable.sym_def_app_icon).into(ivIcon);
+                else {
+                    Uri uri = Uri.parse("android.resource://" + info.packageName + "/" + info.icon);
+                    Picasso.with(context).load(uri).resize(iconSize, iconSize).into(ivIcon);
+                }
+            }
         }
+
+        boolean we = (android.os.Process.myUid() == uid);
 
         // https://android.googlesource.com/platform/system/core/+/master/include/private/android_filesystem_config.h
         uid = uid % 100000; // strip off user ID
@@ -234,34 +270,30 @@ public class AdapterLog extends CursorAdapter {
         tvSAddr.setText(getKnownAddress(saddr));
 
         // Show destination address
-        if (resolve && !isKnownAddress(daddr))
+        if (!we && resolve && !isKnownAddress(daddr))
             if (dname == null) {
-                if (tvDaddr.getTag() == null) {
-                    tvDaddr.setText(daddr);
-                    new AsyncTask<String, Object, String>() {
-                        @Override
-                        protected void onPreExecute() {
-                            tvDaddr.setTag(id);
-                        }
+                tvDaddr.setText(daddr);
+                new AsyncTask<String, Object, String>() {
+                    @Override
+                    protected void onPreExecute() {
+                        ViewCompat.setHasTransientState(tvDaddr, true);
+                    }
 
-                        @Override
-                        protected String doInBackground(String... args) {
-                            try {
-                                return InetAddress.getByName(args[0]).getHostName();
-                            } catch (UnknownHostException ignored) {
-                                return args[0];
-                            }
+                    @Override
+                    protected String doInBackground(String... args) {
+                        try {
+                            return InetAddress.getByName(args[0]).getHostName();
+                        } catch (UnknownHostException ignored) {
+                            return args[0];
                         }
+                    }
 
-                        @Override
-                        protected void onPostExecute(String name) {
-                            Object tag = tvDaddr.getTag();
-                            if (tag != null && (Long) tag == id)
-                                tvDaddr.setText(">" + name);
-                            tvDaddr.setTag(null);
-                        }
-                    }.execute(daddr);
-                }
+                    @Override
+                    protected void onPostExecute(String name) {
+                        tvDaddr.setText(">" + name);
+                        ViewCompat.setHasTransientState(tvDaddr, false);
+                    }
+                }.execute(daddr);
             } else
                 tvDaddr.setText(dname);
         else
@@ -269,12 +301,12 @@ public class AdapterLog extends CursorAdapter {
 
         // Show organization
         tvOrganization.setVisibility(View.GONE);
-        if (organization) {
-            if (!isKnownAddress(daddr) && tvOrganization.getTag() == null)
+        if (!we && organization) {
+            if (!isKnownAddress(daddr))
                 new AsyncTask<String, Object, String>() {
                     @Override
                     protected void onPreExecute() {
-                        tvOrganization.setTag(id);
+                        ViewCompat.setHasTransientState(tvOrganization, true);
                     }
 
                     @Override
@@ -289,12 +321,11 @@ public class AdapterLog extends CursorAdapter {
 
                     @Override
                     protected void onPostExecute(String organization) {
-                        Object tag = tvOrganization.getTag();
-                        if (organization != null && tag != null && (Long) tag == id) {
+                        if (organization != null) {
                             tvOrganization.setText(organization);
                             tvOrganization.setVisibility(View.VISIBLE);
                         }
-                        tvOrganization.setTag(null);
+                        ViewCompat.setHasTransientState(tvOrganization, false);
                     }
                 }.execute(daddr);
         }
@@ -312,7 +343,7 @@ public class AdapterLog extends CursorAdapter {
     public boolean isKnownAddress(String addr) {
         try {
             InetAddress a = InetAddress.getByName(addr);
-            if (a.equals(dns) || a.equals(vpn4) || a.equals(vpn6))
+            if (a.equals(dns1) || a.equals(dns2) || a.equals(vpn4) || a.equals(vpn6))
                 return true;
         } catch (UnknownHostException ignored) {
         }
@@ -322,7 +353,7 @@ public class AdapterLog extends CursorAdapter {
     private String getKnownAddress(String addr) {
         try {
             InetAddress a = InetAddress.getByName(addr);
-            if (a.equals(dns))
+            if (a.equals(dns1) || a.equals(dns2))
                 return "dns";
             if (a.equals(vpn4) || a.equals(vpn6))
                 return "vpn";

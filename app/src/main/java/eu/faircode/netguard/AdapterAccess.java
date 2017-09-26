@@ -16,7 +16,7 @@ package eu.faircode.netguard;
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 import android.content.Context;
@@ -26,6 +26,9 @@ import android.graphics.drawable.Drawable;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.support.v4.graphics.drawable.DrawableCompat;
+import android.support.v4.view.ViewCompat;
+import android.text.SpannableString;
+import android.text.style.UnderlineSpan;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -40,9 +43,6 @@ import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 
 public class AdapterAccess extends CursorAdapter {
-    private static String TAG = "NetGuard.Access";
-
-    private int colID;
     private int colVersion;
     private int colProtocol;
     private int colDaddr;
@@ -50,6 +50,7 @@ public class AdapterAccess extends CursorAdapter {
     private int colTime;
     private int colAllowed;
     private int colBlock;
+    private int colCount;
     private int colSent;
     private int colReceived;
     private int colConnections;
@@ -60,7 +61,6 @@ public class AdapterAccess extends CursorAdapter {
 
     public AdapterAccess(Context context, Cursor cursor) {
         super(context, cursor, 0);
-        colID = cursor.getColumnIndex("ID");
         colVersion = cursor.getColumnIndex("version");
         colProtocol = cursor.getColumnIndex("protocol");
         colDaddr = cursor.getColumnIndex("daddr");
@@ -68,6 +68,7 @@ public class AdapterAccess extends CursorAdapter {
         colTime = cursor.getColumnIndex("time");
         colAllowed = cursor.getColumnIndex("allowed");
         colBlock = cursor.getColumnIndex("block");
+        colCount = cursor.getColumnIndex("count");
         colSent = cursor.getColumnIndex("sent");
         colReceived = cursor.getColumnIndex("received");
         colConnections = cursor.getColumnIndex("connections");
@@ -94,7 +95,6 @@ public class AdapterAccess extends CursorAdapter {
     @Override
     public void bindView(final View view, final Context context, final Cursor cursor) {
         // Get values
-        final long id = cursor.getLong(colID);
         final int version = cursor.getInt(colVersion);
         final int protocol = cursor.getInt(colProtocol);
         final String daddr = cursor.getString(colDaddr);
@@ -102,17 +102,18 @@ public class AdapterAccess extends CursorAdapter {
         long time = cursor.getLong(colTime);
         int allowed = cursor.getInt(colAllowed);
         int block = cursor.getInt(colBlock);
+        int count = cursor.getInt(colCount);
         long sent = cursor.isNull(colSent) ? -1 : cursor.getLong(colSent);
         long received = cursor.isNull(colReceived) ? -1 : cursor.getLong(colReceived);
         int connections = cursor.isNull(colConnections) ? -1 : cursor.getInt(colConnections);
 
         // Get views
-        TextView tvTime = (TextView) view.findViewById(R.id.tvTime);
-        ImageView ivBlock = (ImageView) view.findViewById(R.id.ivBlock);
-        final TextView tvDest = (TextView) view.findViewById(R.id.tvDest);
-        LinearLayout llTraffic = (LinearLayout) view.findViewById(R.id.llTraffic);
-        TextView tvConnections = (TextView) view.findViewById(R.id.tvConnections);
-        TextView tvTraffic = (TextView) view.findViewById(R.id.tvTraffic);
+        TextView tvTime = view.findViewById(R.id.tvTime);
+        ImageView ivBlock = view.findViewById(R.id.ivBlock);
+        final TextView tvDest = view.findViewById(R.id.tvDest);
+        LinearLayout llTraffic = view.findViewById(R.id.llTraffic);
+        TextView tvConnections = view.findViewById(R.id.tvConnections);
+        TextView tvTraffic = view.findViewById(R.id.tvTraffic);
 
         // Set values
         tvTime.setText(new SimpleDateFormat("dd HH:mm").format(time));
@@ -126,15 +127,17 @@ public class AdapterAccess extends CursorAdapter {
             }
         }
 
-        tvDest.setText(
-                Util.getProtocolName(protocol, version, true) +
-                        " " + daddr + (dport > 0 ? "/" + dport : ""));
+        String dest = Util.getProtocolName(protocol, version, true) +
+                " " + daddr + (dport > 0 ? "/" + dport : "") + (count > 1 ? " ?" + count : "");
+        SpannableString span = new SpannableString(dest);
+        span.setSpan(new UnderlineSpan(), 0, dest.length(), 0);
+        tvDest.setText(span);
 
-        if (Util.isNumericAddress(daddr) && tvDest.getTag() == null)
+        if (Util.isNumericAddress(daddr))
             new AsyncTask<String, Object, String>() {
                 @Override
                 protected void onPreExecute() {
-                    tvDest.setTag(id);
+                    ViewCompat.setHasTransientState(tvDest, true);
                 }
 
                 @Override
@@ -148,12 +151,10 @@ public class AdapterAccess extends CursorAdapter {
 
                 @Override
                 protected void onPostExecute(String addr) {
-                    Object tag = tvDest.getTag();
-                    if (tag != null && (Long) tag == id)
-                        tvDest.setText(
-                                Util.getProtocolName(protocol, version, true) +
-                                        " >" + addr + (dport > 0 ? "/" + dport : ""));
-                    tvDest.setTag(null);
+                    tvDest.setText(
+                            Util.getProtocolName(protocol, version, true) +
+                                    " >" + addr + (dport > 0 ? "/" + dport : ""));
+                    ViewCompat.setHasTransientState(tvDest, false);
                 }
             }.execute(daddr);
 

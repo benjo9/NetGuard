@@ -14,13 +14,13 @@
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 #include "netguard.h"
 
 FILE *pcap_file = NULL;
-int pcap_record_size = 64;
+size_t pcap_record_size = 64;
 long pcap_file_size = 2 * 1024 * 1024;
 
 void write_pcap_hdr() {

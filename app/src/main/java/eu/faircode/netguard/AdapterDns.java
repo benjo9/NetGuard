@@ -16,11 +16,14 @@ package eu.faircode.netguard;
     You should have received a copy of the GNU General Public License
     along with NetGuard.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2015-2016 by Marcel Bokhorst (M66B)
+    Copyright 2015-2017 by Marcel Bokhorst (M66B)
 */
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.database.Cursor;
+import android.graphics.Color;
+import android.preference.PreferenceManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -28,9 +31,10 @@ import android.widget.CursorAdapter;
 import android.widget.TextView;
 
 import java.text.SimpleDateFormat;
+import java.util.Date;
 
 public class AdapterDns extends CursorAdapter {
-    private static String TAG = "NetGuard.DNS";
+    private int colorExpired;
 
     private int colTime;
     private int colQName;
@@ -40,6 +44,14 @@ public class AdapterDns extends CursorAdapter {
 
     public AdapterDns(Context context, Cursor cursor) {
         super(context, cursor, 0);
+
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+
+        if (prefs.getBoolean("dark_theme", false))
+            colorExpired = Color.argb(128, Color.red(Color.DKGRAY), Color.green(Color.DKGRAY), Color.blue(Color.DKGRAY));
+        else
+            colorExpired = Color.argb(128, Color.red(Color.LTGRAY), Color.green(Color.LTGRAY), Color.blue(Color.LTGRAY));
+
         colTime = cursor.getColumnIndex("time");
         colQName = cursor.getColumnIndex("qname");
         colAName = cursor.getColumnIndex("aname");
@@ -61,18 +73,22 @@ public class AdapterDns extends CursorAdapter {
         String resource = cursor.getString(colResource);
         int ttl = cursor.getInt(colTTL);
 
+        long now = new Date().getTime();
+        boolean expired = (time + ttl < now);
+        view.setBackgroundColor(expired ? colorExpired : Color.TRANSPARENT);
+
         // Get views
-        TextView tvTime = (TextView) view.findViewById(R.id.tvTime);
-        TextView tvQName = (TextView) view.findViewById(R.id.tvQName);
-        TextView tvAName = (TextView) view.findViewById(R.id.tvAName);
-        TextView tvResource = (TextView) view.findViewById(R.id.tvResource);
-        TextView tvTTL = (TextView) view.findViewById(R.id.tvTTL);
+        TextView tvTime = view.findViewById(R.id.tvTime);
+        TextView tvQName = view.findViewById(R.id.tvQName);
+        TextView tvAName = view.findViewById(R.id.tvAName);
+        TextView tvResource = view.findViewById(R.id.tvResource);
+        TextView tvTTL = view.findViewById(R.id.tvTTL);
 
         // Set values
         tvTime.setText(new SimpleDateFormat("dd HH:mm").format(time));
         tvQName.setText(qname);
         tvAName.setText(aname);
         tvResource.setText(resource);
-        tvTTL.setText(Integer.toString(ttl));
+        tvTTL.setText("+" + Integer.toString(ttl / 1000));
     }
 }

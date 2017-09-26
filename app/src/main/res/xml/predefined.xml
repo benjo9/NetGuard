@@ -33,6 +33,13 @@
 
     <wifi
         blocked="false"
+        package="com.google.android.gms" />
+    <other
+        blocked="false"
+        package="com.google.android.gms" />
+
+    <wifi
+        blocked="false"
         package="com.google.android.apps.gcs" />
     <other
         blocked="false"
@@ -46,6 +53,9 @@
         package="com.android.chrome"
         related="com.android.providers.downloads" />
 
+    <type
+        package="com.android.chrome"
+        system="false" />
     <type
         package="com.facebook.katana"
         system="false" />
@@ -63,5 +73,14 @@
         system="false" />
     <type
         package="com.whatsapp"
+        system="false" />
+    <type
+        package="com.instagram.android"
+        system="false" />
+    <type
+        package="com.facebook.orca"
+        system="false" />
+    <type
+        package="com.google.android.youtube"
         system="false" />
 </predefined>
